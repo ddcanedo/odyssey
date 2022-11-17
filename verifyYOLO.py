@@ -103,7 +103,7 @@ def main():
 			for i in range(1, len(loaded_imgs)+1):
 				fig.add_subplot(1, len(loaded_imgs), i)
 				plt.imshow(loaded_imgs[i-1])
-			plt.show()
+			#plt.show()
 
 		
 		f.close()

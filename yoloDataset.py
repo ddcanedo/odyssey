@@ -152,14 +152,14 @@ def main():
 		if file.endswith(".csv"):
 			annotations.append(folder + '/' + file)
 
+	# Checks if the list is empty = no image was found in the selected folder
+	if not annotations:
+		sys.exit("No annotations found in the selected folder.")
+
 	# Saves all the folders in the same directory as the previous selected folder, except the selected folder
 	folders = []
 	for f in os.listdir(os.path.split(folder)[0]):
 		folders.append(os.path.split(folder)[0] + '/' + f)
-
-	# Checks if the list is empty = no image was found in the selected folder
-	if not annotations:
-		sys.exit("No annotations found in the selected folder.")
 
 
 	# Create dataset folder in YOLOv5 format considering all the different types of images
@@ -210,6 +210,7 @@ def main():
 			geoRef = rasterio.open(image)
 			labels = []
 			width, height = img.size
+			print(img.size)
 
 			# Parse corners of the image (GIS reference)
 			#Left, Bottom, Right, Top
@@ -321,9 +322,9 @@ def main():
 						croppedImg = img.crop((dataInfo[key][0], dataInfo[key][2], dataInfo[key][1], dataInfo[key][3]))
 						imgName = os.path.split(key)[1]
 						if 'train' in key:	
-							croppedImg.save([path for path in imagesTrainPath if os.path.split(f)[1] in path][0] + '/' + imgName)
+							croppedImg.save([path for path in imagesTrainPath if os.path.split(f)[1] in path][0] + imgName)
 						else:
-							croppedImg.save([path for path in imagesValPath if os.path.split(f)[1] in path][0] + '/' + imgName)
+							croppedImg.save([path for path in imagesValPath if os.path.split(f)[1] in path][0] + imgName)
 
 					img.close()
 
