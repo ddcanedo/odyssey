@@ -1,6 +1,7 @@
 # pip install -r requirements.txt
 
 # Base ----------------------------------------
+
 matplotlib>=3.2.2
 numpy>=1.18.5
 opencv-python>=4.1.2
@@ -23,5 +24,13 @@ seaborn>=0.11.0
 # Extras --------------------------------------
 -e git+https://github.com/ddcanedo/albumentations.git@e30231cf3dc27ff972075f602e3bbc152c81e154#egg=albumentations
 rasterio==1.2.10
+pyqtree==1.0.0
 
+
+scikit-learn==1.1.2
 thop  # FLOPs computation
+Flask==2.2.2
+gunicorn==20.1.0 
+laspy==2.3.0
+jakteristics==0.5.0
+Shapely==1.8.5.post1

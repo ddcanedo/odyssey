@@ -4,6 +4,7 @@
 #		   images that had detected objects, transforms the detected objects pixel coordinates to real-world coordinates.
 #
 # [!] Still early in development
+# TODO: 50% step nms gis bbs
 
 import os
 import sys
@@ -15,16 +16,16 @@ from tkinter import filedialog
 import rasterio
 from PIL import Image, ImageDraw
 import torch
-from models.experimental import attempt_load
-import torch.backends.cudnn as cudnn
-from utils.torch_utils import select_device
-from utils.general import check_img_size, non_max_suppression, scale_coords
 from utils.augmentations import letterbox
+from models.common import DetectMultiBackend
+from utils.general import (Profile, check_img_size, non_max_suppression, scale_boxes)
+from utils.torch_utils import select_device
 import laspy
 import pickle
 from jakteristics import las_utils, compute_features, FEATURE_NAMES
 from shapely.geometry import Point, Polygon
 from shapely.wkt import loads
+import pyqtree
 
 csv.field_size_limit(sys.maxsize)
 Image.MAX_IMAGE_PIXELS = None
@@ -139,11 +140,12 @@ def convert2GIS(xyxy, cropExtent, width, height, resolution, xMinImg, yMinImg, x
 	return (xMin, xMax, yMin, yMax), '((' + str(xMin) + ' ' + str(yMin) + ', ' + str(xMin) + ' ' + str(yMax) + ', ' + str(xMax) + ' ' + str(yMax) + ', ' + str(xMax) + ' ' + str(yMin) + '))'
 
 
-def pointCloud(validationModel, pointClouds, cropExtent, className, bb):
+def pointCloud(spindex, validationModel, pointClouds, cropExtent, className, bb):
 	tmp = ''
 	for cloud in os.listdir(pointClouds):
 		tmp = pointClouds + '/' + cloud
 		break
+
 
 	# Creates empty .las file to later populate it with points
 	with laspy.open(tmp) as f:
@@ -151,18 +153,19 @@ def pointCloud(validationModel, pointClouds, cropExtent, className, bb):
 		w.close()
 
 	count = 0
-	# Iterates over the point clouds
-	with laspy.open('tmp.las', mode = 'a') as w:
-		for cloud in os.listdir(pointClouds):
-			with laspy.open(pointClouds + '/' + cloud) as f:
+	# Checks if there is an overlap with the cropped image and the point cloud
+	matches = spindex.intersect((bb[0], bb[2], bb[1], bb[3]))
 
-				# Checks if there is an overlap with the cropped image and the point cloud
-				if bb[0] <= f.header.x_max and bb[1] >= f.header.x_min and bb[2] <= f.header.y_max and bb[3] >= f.header.y_min:
-					# Appends the points of the overlapping region to the previously created .las file
-					las = f.read()          
-					x, y = las.points.x.copy(), las.points.y.copy()
-					mask = (x >= bb[0]) & (x <= bb[1]) & (y >= bb[2]) & (y <= bb[3])
-					roi = las.points[mask]
+	# Iterates over the matched point clouds
+	with laspy.open('tmp.las', mode = 'a') as w:
+		for match in matches:
+			with laspy.open(match) as f:
+				# Appends the points of the overlapping region to the previously created .las file
+				las = f.read()          
+				x, y = las.points[las.classification == 2].x.copy(), las.points[las.classification == 2].y.copy()
+				mask = (x >= bb[0]) & (x <= bb[1]) & (y >= bb[2]) & (y <= bb[3])
+				if True in mask:
+					roi = las.points[las.classification == 2][mask]
 					w.append_points(roi)
 					count += 1
 		
@@ -252,17 +255,17 @@ def LBR(roi, bb):
 def main():
 	resolution = 640
 
-	imgsz=resolution  # inference size (pixels)
+	imgsz=(resolution, resolution)  # inference size (pixels)
 	conf_thres=0.25  # confidence threshold
 	iou_thres=0.45  # NMS IOU threshold
 	max_det=1000  # maximum detections per image
-	classes=None  # filter by class: --class 0, or --class 0 2 3
-	agnostic_nms=False  # class-agnostic NMS
-	cudnn.benchmark = True  # set True to speed up constant image size inference
-	device = 'cpu'
+	agnostic_nms=False
+	classes=None
+	bs = 1
+	device = "0"
 	device = select_device(device)
 
-	weights = 'best.pt'
+	weights = 'da.pt'
 
 	polygonsCsv = 'Segmentation.csv'
 
@@ -300,15 +303,26 @@ def main():
 
 	print(images)
 	validationModel = pickle.load(open('pointCloud.sav', 'rb'))
-	model = attempt_load(weights, map_location=device)
-	stride = int(model.stride.max())  # model stride
-	names = model.module.names if hasattr(model, 'module') else model.names  # get class names
+	# Load YOLO model
+	model = DetectMultiBackend(weights, device=device, dnn=False, fp16=False)
+	stride, names, pt = model.stride, model.names, model.pt
+	imgsz = check_img_size(imgsz, s=stride)  # check image size
+	model.warmup(imgsz=(1 if pt or model.triton else bs, 3, *imgsz))  # warmup
+	seen, windows, dt = 0, [], (Profile(), Profile(), Profile())
 
+	print(names)
 	aux = {}
-	for name in names:
+	for name in names.values():
 		aux[name] = []
 
+	print(aux)
+
 	pointClouds = 'LAS'
+	spindex = pyqtree.Index(bbox=(0, 0, 100, 100))
+	for cloud in os.listdir(pointClouds):
+		with laspy.open(pointClouds + '/' + cloud) as f:
+			spindex.insert(pointClouds + '/' + cloud, (f.header.x_min, f.header.y_min, f.header.x_max, f.header.y_max))
+	
 	# Iterates over the images
 	validated = 0
 	detections = 0
@@ -357,6 +371,7 @@ def main():
 					cropExtent = [i, resolution+i, j, resolution+j]
 					croppedImg = np.array(croppedOriginalImg)
 					displayImg = croppedImg.copy()
+					
 
 					xMin = map(cropExtent[0], 0, width, xMinImg, xMaxImg)
 					xMax = map(cropExtent[1], 0, width, xMinImg, xMaxImg)
@@ -377,29 +392,33 @@ def main():
 								drawnBbs.append((xMin,xMax, yMin, yMax))
 								cv2.rectangle(displayImg, (xMin, yMin), (xMax,yMax), (255,0,0), 2)
 
-						croppedImg = letterbox(croppedImg, imgsz, stride=stride, auto=True)[0]
-						# Convert
-						croppedImg = croppedImg.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
-						croppedImg = np.ascontiguousarray(croppedImg)
-						# Inference
-						# Save to a map, key = img coords, value = detections, confidence
-						croppedImg = torch.from_numpy(croppedImg).to(device)
-						croppedImg = croppedImg.float()
-						croppedImg /= 255  # 0 - 255 to 0.0 - 1.0
-						if len(croppedImg.shape) == 3:
-							croppedImg = croppedImg[None]  # expand for batch dim
+						with dt[0]:
+							im = letterbox(croppedImg, imgsz, stride=stride, auto=True)[0]
+							# Convert
+							im = im.transpose((2, 0, 1))[::-1]  # HWC to CHW
+							im = np.ascontiguousarray(im)
+							im = torch.from_numpy(im).to(model.device)
+							im = im.half() if model.fp16 else im.float()  # uint8 to fp16/32
+							im /= 255  # 0 - 255 to 0.0 - 1.0
+							if len(im.shape) == 3:
+								im = im[None]  # expand for batch dim
 
-						pred = model(croppedImg)[0]
-						pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
+						with dt[1]:
+							pred = model(im, augment=False, visualize=False)
+
+						# NMS
+						with dt[2]:
+							pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
 
 						boxes = 0
 						for x, det in enumerate(pred):
 							if len(det):
 								# Rescale boxes from img_size to im0 size
-								det[:, :4] = scale_coords(croppedImg.shape[2:], det[:, :4], displayImg.shape).round()
+								det[:, :4] = scale_boxes(im.shape[2:], det[:, :4], displayImg.shape).round()
 
 
 								for *xyxy, conf, cls in reversed(det):
+									print((int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])))
 									cv2.rectangle(displayImg, (int(xyxy[0]), int(xyxy[1])), (int(xyxy[2]), int(xyxy[3])), (0,255,255), 1)
 									GISbb, strGISbb = convert2GIS(xyxy, cropExtent, width, height, resolution, xMinImg, yMinImg, xMaxImg, yMaxImg)
 									lbr = LBR(roiPolygons, GISbb)
@@ -407,7 +426,7 @@ def main():
 									if lbr:
 										c = int(cls)  # integer class
 										className = names[c]
-										validation = pointCloud(validationModel, pointClouds, cropExtent, className, GISbb)
+										validation = pointCloud(spindex, validationModel, pointClouds, cropExtent, className, GISbb)
 										if validation == False:
 											annotated = False
 											for b in drawnBbs:
@@ -432,20 +451,20 @@ def main():
 												print('Detection validated')
 												validated += 1
 												cv2.rectangle(displayImg, (int(xyxy[0]), int(xyxy[1])), (int(xyxy[2]), int(xyxy[3])), color, 2)
-
+												aux[className].append(strGISbb)
 
 								
 									# debug
 									else:
 										cv2.rectangle(displayImg, (int(xyxy[0]), int(xyxy[1])), (int(xyxy[2]), int(xyxy[3])), (255,255,0), 4)
 
-									aux[className].append(strGISbb)
+									
 									
 
 						
 						#if boxes > 0:
-						cv2.imshow("Cropped Image", displayImg)
-						cv2.waitKey(0)
+						#cv2.imshow("Cropped Image", displayImg)
+						#cv2.waitKey(0)
 
 			img.close()
 
@@ -471,7 +490,7 @@ def main():
 				else:
 					data[key] += aux[key][i] + ')'
 	
-		writer.writerow([data[key], key])
+			writer.writerow([data[key], key])
 	
 	f.close()
 	if os.path.isfile('tmp.las'):

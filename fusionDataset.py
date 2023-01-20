@@ -20,11 +20,12 @@ from PIL import Image
 import random
 import collections
 import laspy
+import pyqtree
 Image.MAX_IMAGE_PIXELS = None
 
 # Creates dataset directories in YOLOv5 format if they do not exist yet in the same folder as this script
 # TODO: cleaner implementation of this function?
-def createDatasetDir(datasetPath, imagesPath, labelsPath, imagesTrainPath, imagesValPath, labelsTrainPath, labelsValPath):
+def createDatasetDir(datasetPath, imagesPath, labelsPath, imagesTrainPath, imagesValPath, labelsTrainPath, labelsValPath, labelsPolyTrain, labelsPolyVal):
 	if not os.path.exists(datasetPath):
 		os.makedirs(datasetPath)
 		for i in range(len(imagesPath)):
@@ -35,6 +36,8 @@ def createDatasetDir(datasetPath, imagesPath, labelsPath, imagesTrainPath, image
 			os.makedirs(imagesValPath[i])
 			os.makedirs(labelsTrainPath[i])
 			os.makedirs(labelsValPath[i])
+			os.makedirs(labelsPolyTrain[i])
+			os.makedirs(labelsPolyVal[i])
 	else:
 		for i in range(len(imagesPath)):
 			if not os.path.exists(imagesPath[i]):
@@ -54,12 +57,19 @@ def createDatasetDir(datasetPath, imagesPath, labelsPath, imagesTrainPath, image
 				for x in range(len(labelsTrainPath)):
 					os.makedirs(labelsTrainPath[x])
 					os.makedirs(labelsValPath[x])
+					os.makedirs(labelsPolyTrain[i])
+					os.makedirs(labelsPolyVal[i])
 			else:
 				for j in range(len(labelsTrainPath)):
 					if not os.path.exists(labelsTrainPath[j]):
 						os.makedirs(labelsTrainPath[j])
 					if not os.path.exists(labelsValPath[j]):
 						os.makedirs(labelsValPath[j])
+					if not os.path.exists(labelsPolyTrain[j]):
+						os.makedirs(labelsPolyTrain[j])
+					if not os.path.exists(labelsPolyVal[j]):
+						os.makedirs(labelsPolyVal[j])
+
 
 
 # Converts the polygons in the CSV annotations files to bounding boxes
@@ -69,9 +79,12 @@ def poly2bb(row, xMinImg, xMaxImg, yMaxImg, yMinImg):
 	raw[len(raw)-1] = raw[len(raw)-1].strip(')))')
 	xPoints = []
 	yPoints = []
+	poly = []
 	for i in range(0, len(raw)):
 	    xPoints.append(float(raw[i].split(" ")[0]))
 	    yPoints.append(float(raw[i].split(" ")[1]))
+
+	    poly.append([float(raw[i].split(" ")[0]),float(raw[i].split(" ")[1])])
 
 	xMin = min(xPoints)
 	xMax = max(xPoints)
@@ -88,7 +101,7 @@ def poly2bb(row, xMinImg, xMaxImg, yMaxImg, yMinImg):
 	if yMax > yMaxImg:
 		yMax = yMaxImg
 
-	return (xMin, xMax, yMin, yMax)
+	return (xMin, xMax, yMin, yMax), poly
 
 
 # Converts coordinates from GIS reference to image pixels
@@ -102,7 +115,7 @@ def checkVisibility(image, crop, processedObjects, bbs):
 	objectLabels = []
 
 	for bb in bbs:
-		label = bbs[bb]
+		label = bbs[bb][0]
 
 		# The object is 100% inside the cropped image
 		if bb[0] >= crop[0] and bb[1] <= crop[1] and bb[2] >= crop[2] and bb[3] <= crop[3]:
@@ -258,13 +271,14 @@ def pointCloudCrop(dataInfo, pointClouds, labels, imagesTrainPath, imagesValPath
 
 
 # Saves the corresponding point cloud to the cropped region
-def pointCloud(dataInfo, pointClouds, labels, imagesTrainPath, imagesValPath, labelsTrainPath, labelsValPath, xMinImg, xMaxImg, yMinImg, yMaxImg, width, height, resolution):
+def pointCloud(spindex, dataInfo, pointClouds, labels, imagesTrainPath, imagesValPath, labelsTrainPath, labelsValPath, xMinImg, xMaxImg, yMinImg, yMaxImg, width, height, resolution):
 	print("Generating point clouds...")
 	# Gets one cloud to later use its header to write an empty .las file
 	tmp = ''
 	for cloud in os.listdir(pointClouds):
 		tmp = pointClouds + '/' + cloud
 		break
+
 
 	# Iterates over data to get paths for the point cloud and its label
 	for key in dataInfo:
@@ -284,56 +298,58 @@ def pointCloud(dataInfo, pointClouds, labels, imagesTrainPath, imagesValPath, la
 				w = laspy.open(c, mode='w', header = f.header)
 				w.close()
 
-		# Opens the previously created .las file to append points
-		# Iterates over the point clouds
-		for cloud in os.listdir(pointClouds):
-			with laspy.open(pointClouds + '/' + cloud) as f:
-				las = f.read()
-				for i in range(len(dataInfo[key][1])):
-					# Gets bounding box in 2D reference
-					xMinLabel = map(dataInfo[key][1][i][0], dataInfo[key][0][0], dataInfo[key][0][1], 0, resolution)
-					xMaxLabel = map(dataInfo[key][1][i][1], dataInfo[key][0][0], dataInfo[key][0][1], 0, resolution)
-					yMinLabel = map(dataInfo[key][1][i][2], dataInfo[key][0][2], dataInfo[key][0][3], 0, resolution)
-					yMaxLabel = map(dataInfo[key][1][i][3], dataInfo[key][0][2], dataInfo[key][0][3], 0, resolution)
+		for i in range(len(dataInfo[key][1])):
+			# Gets bounding box in 2D reference
+			xMinLabel = map(dataInfo[key][1][i][0], dataInfo[key][0][0], dataInfo[key][0][1], 0, resolution)
+			xMaxLabel = map(dataInfo[key][1][i][1], dataInfo[key][0][0], dataInfo[key][0][1], 0, resolution)
+			yMinLabel = map(dataInfo[key][1][i][2], dataInfo[key][0][2], dataInfo[key][0][3], 0, resolution)
+			yMaxLabel = map(dataInfo[key][1][i][3], dataInfo[key][0][2], dataInfo[key][0][3], 0, resolution)
 
-					# Gets bounding box in GIS reference
-					xMin = map(dataInfo[key][1][i][0], 0, width, xMinImg, xMaxImg)
-					xMax = map(dataInfo[key][1][i][1], 0, width, xMinImg, xMaxImg)
-					yMax = map(dataInfo[key][1][i][2], height, 0, yMinImg, yMaxImg)
-					yMin = map(dataInfo[key][1][i][3], height, 0, yMinImg, yMaxImg)
+			# Gets bounding box in GIS reference
+			xMin = map(dataInfo[key][1][i][0], 0, width, xMinImg, xMaxImg)
+			xMax = map(dataInfo[key][1][i][1], 0, width, xMinImg, xMaxImg)
+			yMax = map(dataInfo[key][1][i][2], height, 0, yMinImg, yMaxImg)
+			yMin = map(dataInfo[key][1][i][3], height, 0, yMinImg, yMaxImg)
+
+			matches = spindex.intersect((xMin,yMin,xMax,yMax))
+
+			for match in matches:
+				with laspy.open(match) as f:
 					# Checks if there is an overlap with the cropped image and the point cloud
 					if xMin <= f.header.x_max and xMax >= f.header.x_min and yMin <= f.header.y_max and yMax >= f.header.y_min:
+						las = f.read()
 						# Appends the points of the overlapping region to the previously created .las file
 						          
 						x, y = las.points[las.classification == 2].x.copy(), las.points[las.classification == 2].y.copy()
 						mask = (x >= xMin) & (x <= xMax) & (y >= yMin) & (y <= yMax)
-						roi = las.points[las.classification == 2][mask]
+						if True in mask:
+							roi = las.points[las.classification == 2][mask]
 
-						with laspy.open(cloudName.split('.')[0] + str(i) + '.las', mode = 'a') as w:
-							w.append_points(roi)
-							# Updates the previously created .las file header
-							if clouds[cloudName.split('.')[0] + str(i) + '.las'] == 0:
-								w.header.x_min = np.min(roi.x)
-								w.header.y_min = np.min(roi.y)
-								w.header.z_min = np.min(roi.z)
-								w.header.x_max = np.max(roi.x)
-								w.header.y_max = np.max(roi.y)
-								w.header.z_max = np.max(roi.z)
-							else:
-								if w.header.x_min > np.min(roi.x):
+							with laspy.open(cloudName.split('.')[0] + str(i) + '.las', mode = 'a') as w:
+								w.append_points(roi)
+								# Updates the previously created .las file header
+								if clouds[cloudName.split('.')[0] + str(i) + '.las'] == 0:
 									w.header.x_min = np.min(roi.x)
-								if w.header.y_min > np.min(roi.y):
 									w.header.y_min = np.min(roi.y)
-								if w.header.z_min > np.min(roi.z):
 									w.header.z_min = np.min(roi.z)
-								if w.header.x_max < np.max(roi.x):
 									w.header.x_max = np.max(roi.x)
-								if w.header.y_max < np.max(roi.y):
 									w.header.y_max = np.max(roi.y)
-								if w.header.z_max < np.max(roi.z):
 									w.header.z_max = np.max(roi.z)
+								else:
+									if w.header.x_min > np.min(roi.x):
+										w.header.x_min = np.min(roi.x)
+									if w.header.y_min > np.min(roi.y):
+										w.header.y_min = np.min(roi.y)
+									if w.header.z_min > np.min(roi.z):
+										w.header.z_min = np.min(roi.z)
+									if w.header.x_max < np.max(roi.x):
+										w.header.x_max = np.max(roi.x)
+									if w.header.y_max < np.max(roi.y):
+										w.header.y_max = np.max(roi.y)
+									if w.header.z_max < np.max(roi.z):
+										w.header.z_max = np.max(roi.z)
 
-						clouds[cloudName.split('.')[0] + str(i) + '.las'] += 1
+							clouds[cloudName.split('.')[0] + str(i) + '.las'] += 1
 
 		# If .las file was not populated with points, deletes it
 		for c in clouds:
@@ -347,7 +363,7 @@ def pointCloud(dataInfo, pointClouds, labels, imagesTrainPath, imagesValPath, la
 
 
 def main():
-	random.seed(1)
+	#random.seed(1)
 	# Gets the path to the directory where the image data is located
 	#
 	# For example:
@@ -398,6 +414,8 @@ def main():
 	imagesValPath = []
 	labelsTrainPath = []
 	labelsValPath = []
+	labelsPolyTrain= []
+	labelsPolyVal = []
 	for f in folders:
 		imagesPath.append(datasetPath + os.path.split(f)[1] + '/' + 'images/')
 		labelsPath.append(datasetPath + os.path.split(f)[1] + '/' + 'labels/')
@@ -407,22 +425,34 @@ def main():
 	for p in labelsPath:
 		labelsTrainPath.append(p + 'train/')
 		labelsValPath.append(p + 'val/')
+		labelsPolyTrain.append(p + 'trainPoly/')
+		labelsPolyVal.append(p + 'valPoly/')
 
-	createDatasetDir(datasetPath, imagesPath, labelsPath, imagesTrainPath, imagesValPath, labelsTrainPath, labelsValPath)
+	createDatasetDir(datasetPath, imagesPath, labelsPath, imagesTrainPath, imagesValPath, labelsTrainPath, labelsValPath, labelsPolyTrain, labelsPolyVal)
 
 	# Update folders list for later 
 	folders = [path for path in folders if os.path.split(folder)[1] not in path]
 
 	resolution = 0
 	while resolution <= 0:
-		resolution = int(input("Image resolution for the dataset (greater than 0): "))
+		resolution = int(input("Image resolution for the dataset: "))
 
 	validationSize = 0
 	while validationSize > 50 or validationSize < 10:
 		validationSize = int(input("Validation set size [10, 50]%: "))
 	
+
 	labels = []
 	print('Creating the dataset, please wait...')
+
+	# Iterates over the point clouds
+	spindex = pyqtree.Index(bbox=(0, 0, 100, 100))
+	for cloud in os.listdir(pointClouds):
+		with laspy.open(pointClouds + '/' + cloud) as f:
+			spindex.insert(pointClouds + '/' + cloud, (f.header.x_min, f.header.y_min, f.header.x_max, f.header.y_max))
+
+	txtPaths = open(datasetPath + 'paths.txt', 'w')
+
 	# Iterates over the images
 	for annotation in annotations:
 
@@ -433,6 +463,7 @@ def main():
 		image = annotation.split('.')[0] + '.tif'
 		if os.path.exists(image):
 			print('Processing', image)
+			txtPaths.write(image + '\n')
 			# Load image
 			img = Image.open(image)
 			geoRef = rasterio.open(image)
@@ -451,21 +482,27 @@ def main():
 				resolution = min(width, height)
 
 			bbs = {}
+
 			# Open the CSV file containing the object annotations
 			with open(annotation) as csvfile:
 				reader = csv.DictReader(csvfile)
 				# This considers that polygons are under the column name "WKT" and labels are under the column name "Id"
 				for row in reader:
-
 					# Converts polygon to bounding box
-					bb = poly2bb(row['WKT'], xMinImg, xMaxImg, yMaxImg, yMinImg)
+					bb, poly = poly2bb(row['WKT'], xMinImg, xMaxImg, yMaxImg, yMinImg)
 					# Maps coordinates from GIS reference to image pixels
 					xMin = int(map(bb[0], xMinImg, xMaxImg, 0, width))
 					xMax = int(map(bb[1], xMinImg, xMaxImg, 0, width))
 					yMax = int(map(bb[2], yMinImg, yMaxImg, height, 0))
 					yMin = int(map(bb[3], yMinImg, yMaxImg, height, 0))
 
-					bbs[(xMin, xMax, yMin, yMax)] = row['Id']
+					polygon = []
+					for p in poly:
+						xPoly = int(map(p[0], xMinImg, xMaxImg, 0, width))
+						yPoly = int(map(p[1], yMinImg, yMaxImg, height, 0))
+						polygon.append([xPoly, yPoly])
+
+					bbs[(xMin, xMax, yMin, yMax)] = [row['Id'], polygon]
 
 
 			for bb in bbs:
@@ -481,17 +518,18 @@ def main():
 					objectLabels = []
 					crop = []
 
+					while len(x) > 0 and len(y) > 0:
 					# Iterates over the list of random points
-					for i in x:
+						i = random.choice(x)
+						j = random.choice(y)
+						x.remove(i)
+						y.remove(j)		
+						# Gets a region of interest expanding the random point into a region of interest with a certain resolution
+						crop = (i-resolution//2, i+resolution//2, j-resolution//2, j+resolution//2)
+						# Checks if that region of interest only covers 100% visible objects
+						visibleObjects, objectLabels = checkVisibility(image, crop, processedObjects, bbs)
 						if visibleObjects:
 							break
-						for j in y:
-							# Gets a region of interest expanding the random point into a region of interest with a certain resolution
-							crop = (i-resolution//2, i+resolution//2, j-resolution//2, j+resolution//2)
-							# Checks if that region of interest only covers 100% visible objects
-							visibleObjects, objectLabels = checkVisibility(image, crop, processedObjects, bbs)
-							if visibleObjects:
-								break
 
 					# If we obtain a list of visible objects within a region of interest, we save it
 					if visibleObjects:
@@ -501,9 +539,11 @@ def main():
 						# Training/Validation split
 						if np.random.uniform(0,1) > validationSize/100:
 							labelPath = labelsTrainPath
+							polyPath = labelsPolyTrain
 							imagePath = imagesTrainPath				
 						else:
 							labelPath = labelsValPath
+							polyPath = labelsPolyVal
 							imagePath = imagesValPath
 
 
@@ -527,7 +567,6 @@ def main():
 									centerY = map(centerY, crop[2], crop[3], 0, 1)
 									w  = (centerX - map(visibleObjects[i][0], crop[0], crop[1], 0, 1)) * 2.0
 									h = (centerY - map(visibleObjects[i][2], crop[2], crop[3], 0, 1)) * 2.0
-
 									# Saves unique labels to a list for later use the index as the class label (YOLO format)
 									if objectLabels[i] not in labels:
 										labels.append(objectLabels[i])
@@ -536,6 +575,34 @@ def main():
 									txtFile.write(str(labels.index(objectLabels[i])) + " " + str(centerX) + " " + str(centerY) + " " +str(w)+ " "+ str(h) + "\n")
 
 								txtFile.close()
+
+						for label in polyPath:
+							if label.split('/')[-4] != pointClouds.split('/')[-1]:
+								txtFile = open(label + image.split('.')[0].split('/')[-1] + coords + ".txt", "a+")
+								for i in range(len(visibleObjects)):
+
+									poly = bbs[visibleObjects[i]][1]
+
+									# Saves unique labels to a list for later use the index as the class label (YOLO format)
+									if objectLabels[i] not in labels:
+										labels.append(objectLabels[i])
+							
+									polygon = ""
+									for p in poly:
+										polygon += " "
+										pX = map(p[0], crop[0], crop[1], 0, resolution)
+										pY = map(p[1], crop[2], crop[3], 0, resolution)
+										polygon += str(pX) + " " + str(pY)									
+						
+
+									# Writes/Appends the annotations to a text file that has the same name of the respective image
+									txtFile.write(str(labels.index(objectLabels[i])) + polygon + "\n")
+
+								txtFile.close()
+
+
+
+
 			img.close()
 		
 			# Goes through the other image data using the stored cropping information to quickly crop them in the same positions
@@ -558,9 +625,9 @@ def main():
 						img.close()
 				else:
 					# Writes the point cloud corresponding to the cropped region
-					pointCloud(dataInfo, pointClouds, labels, imagesTrainPath, imagesValPath, labelsTrainPath, labelsValPath, xMinImg, xMaxImg, yMinImg, yMaxImg, width, height, resolution)
+					pointCloud(spindex, dataInfo, pointClouds, labels, imagesTrainPath, imagesValPath, labelsTrainPath, labelsValPath, xMinImg, xMaxImg, yMinImg, yMaxImg, width, height, resolution)
+	txtPaths.close()
 
-					
 
 if __name__ == "__main__":
 	main()
