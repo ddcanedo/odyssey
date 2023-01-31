@@ -4,7 +4,7 @@
 #		   images that had detected objects, transforms the detected objects pixel coordinates to real-world coordinates.
 #
 # [!] Still early in development
-# TODO: 50% step nms gis bbs
+# TODO: 50% step nms gis bbs, dont use LOF on original sites
 
 import os
 import sys
@@ -220,8 +220,8 @@ def pointCloud(spindex, validationModel, pointClouds, cropExtent, className, bb)
 		
 	if count > 0:
 		xyz = las_utils.read_las_xyz('tmp.las')
-		#FEATURE_NAMES = ['planarity', 'linearity', 'surface_variation', 'sphericity', 'verticality']
-		features = compute_features(xyz, search_radius=3)#, feature_names = ['planarity', 'linearity', 'surface_variation', 'sphericity', 'verticality'])
+		#FEATURE_NAMES = ['linearity', 'planarity', 'surface_variation', 'sphericity']
+		features = compute_features(xyz, search_radius=3)#, feature_names = ['linearity', 'planarity', 'surface_variation', 'sphericity'])
 		
 		if np.isnan(features).any() == False:
 
@@ -236,8 +236,12 @@ def pointCloud(spindex, validationModel, pointClouds, cropExtent, className, bb)
 			X = []
 			for i in FEATURE_NAMES:		
 				mean = np.mean(stats[i])
+				median = np.median(stats[i])
+				var = np.var(stats[i])
 				stdev = np.std(stats[i])
-				X += [mean,stdev]
+				cov = np.cov(stats[i])
+				X += [median, stdev, var, cov]
+				#X.append(cov)
 				#print(i + ': ' + str(mean) + ' - ' + str(stdev))
 
 
@@ -350,7 +354,7 @@ def main():
 
 
 	print(images)
-	validationModel = pickle.load(open('test.sav', 'rb'))
+	validationModel = pickle.load(open('pointCloud.sav', 'rb'))
 	# Load YOLO model
 	model = DetectMultiBackend(weights, device=device, dnn=False, fp16=False)
 	stride, names, pt = model.stride, model.names, model.pt
@@ -437,6 +441,7 @@ def main():
 					roiPolygons = LBRroi(polygons, (xMin,xMax,yMin,yMax))
 
 					if len(roiPolygons) > 0:
+						drawnBbs = []
 						boxes = 0
 						for bb in bbs:
 							if intersection(bb, cropExtent):
@@ -445,60 +450,72 @@ def main():
 								xMax = int(map(bb[1], i, i+resolution, 0, resolution))
 								yMin = int(map(bb[2], j, j+resolution, 0, resolution))
 								yMax = int(map(bb[3], j, j+resolution, 0, resolution))
+								drawnBbs.append((xMin,xMax, yMin, yMax))
 								cv2.rectangle(displayImg, (xMin, yMin), (xMax,yMax), (255,0,0), 2)
-						#if boxes > 0:
-						with dt[0]:
-							im = letterbox(croppedImg, imgsz, stride=stride, auto=True)[0]
-							# Convert
-							im = im.transpose((2, 0, 1))[::-1]  # HWC to CHW
-							im = np.ascontiguousarray(im)
-							im = torch.from_numpy(im).to(model.device)
-							im = im.half() if model.fp16 else im.float()  # uint8 to fp16/32
-							im /= 255  # 0 - 255 to 0.0 - 1.0
-							if len(im.shape) == 3:
-								im = im[None]  # expand for batch dim
+						if boxes > 0:
+							with dt[0]:
+								im = letterbox(croppedImg, imgsz, stride=stride, auto=True)[0]
+								# Convert
+								im = im.transpose((2, 0, 1))[::-1]  # HWC to CHW
+								im = np.ascontiguousarray(im)
+								im = torch.from_numpy(im).to(model.device)
+								im = im.half() if model.fp16 else im.float()  # uint8 to fp16/32
+								im /= 255  # 0 - 255 to 0.0 - 1.0
+								if len(im.shape) == 3:
+									im = im[None]  # expand for batch dim
 
-						with dt[1]:
-							pred = model(im, augment=False, visualize=False)
+							with dt[1]:
+								pred = model(im, augment=False, visualize=False)
 
-						# NMS
-						with dt[2]:
-							pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
+							# NMS
+							with dt[2]:
+								pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
 
-						
-						for x, det in enumerate(pred):
-							if len(det):
-								# Rescale boxes from img_size to im0 size
-								det[:, :4] = scale_boxes(im.shape[2:], det[:, :4], displayImg.shape).round()
-
-
+							
+							for x, det in enumerate(pred):
+								if len(det):
+									# Rescale boxes from img_size to im0 size
+									det[:, :4] = scale_boxes(im.shape[2:], det[:, :4], displayImg.shape).round()
 
 
-								for *xyxy, conf, cls in reversed(det):
-									cv2.rectangle(displayImg, (int(xyxy[0]), int(xyxy[1])), (int(xyxy[2]), int(xyxy[3])), (0,255,255), 1)
-									GISbb = convert2GIS(xyxy, cropExtent, width, height, resolution, xMinImg, yMinImg, xMaxImg, yMaxImg)
-									lbr = LBR(roiPolygons, GISbb)
-									print(lbr)
-									yoloDetections.append(GISbb)
-									#annotated = False
-									#for b in drawnBbs:
-									#	if getIou(b, (int(xyxy[0]), int(xyxy[2]), int(xyxy[1]), int(xyxy[3]))) > 0.5:
-									#		annotated = True
-									#		break
-									
 
-									if lbr:
-										c = int(cls)  # integer class
-										className = names[c]
-										validation = pointCloud(spindex, validationModel, pointClouds, cropExtent, className, GISbb)
-									
-										if validation == True:
-											#boxes += 1
-											color = (0,255,0)
-											print('Detection validated')
-											cv2.rectangle(displayImg, (int(xyxy[0]), int(xyxy[1])), (int(xyxy[2]), int(xyxy[3])), color, 1)
+
+									for *xyxy, conf, cls in reversed(det):
+										cv2.rectangle(displayImg, (int(xyxy[0]), int(xyxy[1])), (int(xyxy[2]), int(xyxy[3])), (0,255,255), 1)
+										GISbb = convert2GIS(xyxy, cropExtent, width, height, resolution, xMinImg, yMinImg, xMaxImg, yMaxImg)
+										lbr = LBR(roiPolygons, GISbb)
+										print(lbr)
+										yoloDetections.append(GISbb)
+										
+										
+										
+
+										if lbr:
+											annotated = False
+											for b in drawnBbs:
+												if getIou(b, (int(xyxy[0]), int(xyxy[2]), int(xyxy[1]), int(xyxy[3]))) > iou_thres:
+													annotated = True
+													break
+
+											if annotated == True:
+												color = (0,255,0)
+												print('Detection validated')
+												cv2.rectangle(displayImg, (int(xyxy[0]), int(xyxy[1])), (int(xyxy[2]), int(xyxy[3])), color, 1)												
+												validatedDetections.append(GISbb)
+
+											else:
+
+												c = int(cls)  # integer class
+												className = names[c]
+												validation = pointCloud(spindex, validationModel, pointClouds, cropExtent, className, GISbb)
 											
-											validatedDetections.append(GISbb)												
+												if validation == True:
+													#boxes += 1
+													color = (0,255,0)
+													print('Detection validated')
+													cv2.rectangle(displayImg, (int(xyxy[0]), int(xyxy[1])), (int(xyxy[2]), int(xyxy[3])), color, 1)
+													
+													validatedDetections.append(GISbb)												
 
 
 									
@@ -506,13 +523,14 @@ def main():
 
 						
 						#if boxes > 0:
-						cv2.imshow("Cropped Image", displayImg)
-						cv2.waitKey(0)
+							#cv2.imshow("Cropped Image", displayImg)
+							#cv2.waitKey(0)
 
 			img.close()
 
 			finalYolo = nms(yoloDetections, iou_thres)
 			finalValidated = nms(validatedDetections, iou_thres)
+			
 
 			detections += len(finalYolo)
 			validated += len(finalValidated)
@@ -521,7 +539,7 @@ def main():
 			for d in finalYolo:
 				annotated = False
 				for b in annotatedBbs:  
-					if getIou(d, b) > iou_thres:
+					if getIou(d, b) > 0.2:
 						annotated = True
 						break
 				if annotated == True:
@@ -536,7 +554,7 @@ def main():
 				aux[className].append(strGISbb)
 				annotated = False
 				for b in annotatedBbs:  
-					if getIou(d, b) > iou_thres:
+					if getIou(d, b) > 0.2:
 						annotated = True
 						break
 				if annotated == True:

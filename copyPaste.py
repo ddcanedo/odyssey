@@ -36,7 +36,7 @@
 #
 #
 # [How many copy-paste augmentations per image]
-# Here the the script expects the user to input a number of copy-paste augmentations per image.
+# Here the script expects the user to input a number of copy-paste augmentations per image.
 # For instance, if the user inputs 10, each image will have 10 copy-pasted objects maximum.
 
 
@@ -444,7 +444,7 @@ def main():
 			for subList in list(polys.values()):
 				flatList.extend(subList)
 
-
+			# Verifies if there are no annotated sites on the proposed cropped image
 			if intersectsPoly(flatList, (crop[0], crop[1], crop[2], crop[3])) == False:
 			
 				croppedImg = img.crop((crop[0], crop[2], crop[1], crop[3]))
@@ -512,6 +512,7 @@ def main():
 
 						croppedPosition = img.crop((ii,jj,ii+w,jj+h))
 						croppedPosition = croppedPosition.convert("L")
+
 						blackPixels = 0
 						pixels = croppedPosition.getdata()
 						for pixel in pixels:

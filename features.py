@@ -9,7 +9,7 @@ import pickle
 import math
 
 print(FEATURE_NAMES)
-#FEATURE_NAMES = ['planarity', 'linearity', 'surface_variation', 'sphericity', 'verticality']
+#FEATURE_NAMES = ['linearity', 'planarity', 'surface_variation', 'sphericity']
 
 
 folder = filedialog.askdirectory(title = "Select the folder with the LAS files")
@@ -21,9 +21,11 @@ for f in os.listdir(folder):
 
 meanTest = {}
 stdTest = {}
+covTest = {}
 for i in FEATURE_NAMES:
 	meanTest[i] = []
 	stdTest[i] = []
+	covTest[i] = []
 
 X = []
 for f in trainVal:
@@ -35,7 +37,7 @@ for f in trainVal:
 		#print('------')
 
 
-		features = compute_features(xyz, search_radius=3)#, feature_names = ['planarity', 'linearity', 'surface_variation', 'sphericity', 'verticality'])
+		features = compute_features(xyz, search_radius=3)#, feature_names = ['linearity', 'planarity', 'surface_variation', 'sphericity'])
 		
 		if np.isnan(features).any() == False:
 			stats = {}
@@ -50,10 +52,15 @@ for f in trainVal:
 
 			for i in FEATURE_NAMES:		
 				mean = np.mean(stats[i])
+				median = np.median(stats[i])
+				var = np.var(stats[i])
 				stdev = np.std(stats[i])
-				tmp += [mean,stdev]
+				cov = np.cov(stats[i])
+				tmp += [median, stdev, var, cov]
+				#tmp.append(cov)
 				meanTest[i].append(mean)
 				stdTest[i].append(stdev)
+				covTest[i].append(cov)
 
 
 			#tmp += list(np.max(xyz, axis=0)-np.min(xyz, axis=0))
@@ -65,10 +72,9 @@ for f in trainVal:
 #print(X)
 
 for i in meanTest:
-	print(i + ': ' + str(max(meanTest[i]))+ ' - ' + str(max(stdTest[i])))
-
-#clf = OneClassSVM(verbose = 1, nu=0.1, gamma=0.1).fit(X)
-#clf = linear_model.SGDOneClassSVM(random_state=2, verbose = 1).fit(X)
+	print(i + ': ' + str(min(covTest[i]))+ ' - ' + str(max(covTest[i])))
+#clf = OneClassSVM(gamma='auto').fit(X)
+#clf = linear_model.SGDOneClassSVM(nu=0.05, shuffle=True, fit_intercept=True, random_state=1, verbose = 1).fit(X)
 clf = LocalOutlierFactor(n_neighbors=1, novelty=True).fit(X)
 #clf.fit(X)
 predictions = clf.predict(X)
