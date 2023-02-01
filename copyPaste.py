@@ -487,17 +487,9 @@ def main():
 						
 						minX, minY, maxX, maxY  = Polygon(poly).bounds
 
-						# Geometric
-						g = random.randint(0, len(geometric)-1)
-						croppedPoly = croppedPoly.transpose(geometric[g])
-
+						mask = Image.new("L", croppedPoly.size, 0)
 						w,h = croppedPoly.size
 
-						# Out of bounds
-						if ii+w > width or jj+h > height:
-							continue
-
-						mask = Image.new("L", croppedPoly.size, 0)
 						draw = ImageDraw.Draw(mask)
 
 						cPoly = []
@@ -507,6 +499,17 @@ def main():
 							cPoly.append((cX,cY))
 
 						draw.polygon(cPoly, fill=255)
+
+						# Geometric
+						g = random.randint(0, len(geometric)-1)
+						mask = mask.transpose(geometric[g])
+						croppedPoly = croppedPoly.transpose(geometric[g])
+
+						w,h = croppedPoly.size
+
+						# Out of bounds
+						if ii+w > width or jj+h > height:
+							continue			
 
 						mask = mask.filter(ImageFilter.SMOOTH)
 
